@@ -1,6 +1,9 @@
 # Created by https://www.toptal.com/developers/gitignore/api/c,c++,windows,visualstudiocode,visualstudio,linux
 # Edit at https://www.toptal.com/developers/gitignore?templates=c,c++,windows,visualstudiocode,visualstudio,linux
 
+### custom ###
+mdriver
+
 ### C ###
 build/
 
