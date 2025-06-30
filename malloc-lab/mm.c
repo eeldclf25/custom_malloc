@@ -65,6 +65,13 @@ typedef size_t default_t;
 #define PREV_BP(bp) ((char *)(bp) - GET_SIZE((char *)bp - DSIZE))   // bp 위치에서 이전 블록 bp 위치를 출력하는 매크로
 
 static char *heap_listp = NULL;
+static char *heap_startp = NULL;
+
+
+
+
+
+#define USE_NEXT_FIT
 
 
 
@@ -93,6 +100,11 @@ void *coalesce(void *bp)
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
     }
+
+#ifdef USE_NEXT_FIT
+    if (HDRP(bp) <= heap_listp && heap_listp <= FTRP(bp))
+        heap_listp = bp;
+#endif
     
     return bp;
 }
@@ -128,9 +140,13 @@ int mm_init(void)
     PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));
     PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));
     PUT(heap_listp + (3 * WSIZE), PACK(0, 1));
-    
+
     heap_listp += (2 * WSIZE);
-    
+
+#ifdef USE_NEXT_FIT
+    heap_startp = heap_listp;
+#endif
+
     if (extend_heap(CHUNKSIZE) == NULL)
         return -1;
 
@@ -140,12 +156,29 @@ int mm_init(void)
 /*
  * find_fit - 해당 bytes의 가용 블록이 있는지 찾는 함수
  */
-void *find_fit(size_t bytes)
+void *first_fit(size_t bytes)
 {
     for (void *bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BP(bp))
         if (!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= bytes))
             return bp;
     
+    return NULL;
+}
+
+/*
+ * next_fit - 해당 bytes의 가용 블록이 있는지 찾는 함수
+ */
+void *next_fit(size_t bytes)
+{
+    void *bp = heap_listp;
+
+    do {
+        if (!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= bytes))
+            return bp;
+        else
+            bp = (GET_SIZE(HDRP(bp)) == 0) ? heap_startp : NEXT_BP(bp);
+    } while (bp != heap_listp);
+
     return NULL;
 }
 
@@ -180,13 +213,21 @@ void *mm_malloc(size_t size)
         return NULL;
     
     size_t new_size = (size <= DSIZE) ? (DSIZE + DSIZE) : (ALIGN(size) + DSIZE);
-    void *check_bp = find_fit(new_size);
+
+#ifdef USE_NEXT_FIT
+    void *check_bp = next_fit(new_size);
+#else
+    void *check_bp = first_fit(new_size);
+#endif
 
     if (check_bp == NULL)
         check_bp = extend_heap(MAX(new_size, CHUNKSIZE));
 
     if (check_bp != NULL) {
         place(check_bp, new_size);
+#ifdef USE_NEXT_FIT
+        heap_listp = NEXT_BP(check_bp);
+#endif
         return check_bp;
     }
     else {
