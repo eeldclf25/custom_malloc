@@ -44,7 +44,7 @@ typedef size_t default_t;   // mm.c 에서 사용할 워드 크기(해당 타입
 #define WSIZE (sizeof(default_t)) // default_t 사이즈로 워드 크기 설정
 #define DSIZE (2 * WSIZE)   // 더블 워드 크기 설정
 
-#define CHUNKSIZE (1 << 6)   // 힙 공간을 확장할 때 확장하고싶은 크기
+#define CHUNKSIZE (1 << 12)   // 힙 공간을 확장할 때 확장하고싶은 크기
 
 #define MAX(x, y) (((x) > (y)) ? (x) : (y)) // x, y 중에 더 큰값 반환
 #define ALIGN(size) (((size) + DSIZE - 1) & ~(DSIZE - 1)) // 들어온 size를 DSIZE의 가장 가까운 배수로 올림
@@ -60,28 +60,17 @@ typedef size_t default_t;   // mm.c 에서 사용할 워드 크기(해당 타입
 #define HDRP(bp) ((char *)(bp) - WSIZE) // bp 위치에서 헤더 위치를 출력하는 매크로
 #define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)    // bp 위치에서 푸터 위치를 출력하는 매크로
 
-#define PREV_BP(bp) ((char *)(bp) - GET_SIZE((char *)bp - DSIZE))   // bp 위치에서 이전 블록 bp 위치를 출력하는 매크로
 #define NEXT_BP(bp) ((char *)(bp) + GET_SIZE((char *)bp - WSIZE))   // bp 위치에서 다음 블록 bp 위치를 출력하는 매크로
+#define PREV_BP(bp) ((char *)(bp) - GET_SIZE((char *)bp - DSIZE))   // bp 위치에서 이전 블록 bp 위치를 출력하는 매크로
 
-#define PRED(bp) ((char *)(bp))
-#define SUCC(bp) ((char *)(bp) + WSIZE)
+static char *heap_listp = NULL;
+static char *heap_startp = NULL;
 
-#define PRED_BP(bp) (GET((char *)(bp)))
-#define SUCC_BP(bp) (GET((char *)(bp) + WSIZE))
 
-#define UNLINK(bp) \
-    PUT(PRED(SUCC_BP(bp)), PRED_BP(bp)); \
-    PUT(SUCC(PRED_BP(bp)), SUCC_BP(bp));
 
-#define LINK(bp, pred, succ) \
-    PUT(PRED(succ), (bp)); \
-    PUT(PRED(bp), (pred)); \
-    PUT(SUCC(bp), (succ)); \
-    PUT(SUCC(pred), (bp));
 
-static char *heap_prologue = NULL;
-static char *heap_epilogue = NULL;
 
+#define USE_NEXT_FIT
 
 
 
@@ -97,28 +86,27 @@ void *coalesce(void *bp)
 
     if (!prev_alloc && !next_alloc) {
         size += GET_SIZE(HDRP(PREV_BP(bp))) + GET_SIZE(HDRP(NEXT_BP(bp)));
-        UNLINK(PREV_BP(bp));
-        UNLINK(NEXT_BP(bp));
         PUT(HDRP(PREV_BP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BP(bp)), PACK(size, 0));
         bp = PREV_BP(bp);
     }
     else if (!prev_alloc && next_alloc) {
         size += GET_SIZE(HDRP(PREV_BP(bp)));
-        UNLINK(PREV_BP(bp));
         PUT(HDRP(PREV_BP(bp)), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
         bp = PREV_BP(bp);
     }
     else if (prev_alloc && !next_alloc) {
         size += GET_SIZE(HDRP(NEXT_BP(bp)));
-        UNLINK(NEXT_BP(bp));
         PUT(FTRP(NEXT_BP(bp)), PACK(size, 0));
         PUT(HDRP(bp), PACK(size, 0));
     }
 
-    LINK(bp, heap_prologue, SUCC_BP(heap_prologue));
-
+#ifdef USE_NEXT_FIT
+    if (HDRP(bp) <= heap_listp && heap_listp <= FTRP(bp))
+        heap_listp = bp;
+#endif
+    
     return bp;
 }
 
@@ -127,21 +115,14 @@ void *coalesce(void *bp)
  */
 void *extend_heap(size_t bytes)
 {
-    void *bp = heap_epilogue;
-    if (mem_sbrk(bytes) == (void *)-1)
+    void *bp = mem_sbrk(bytes);
+
+    if (bp == (void *)-1)
         return NULL;
 
-    PUT(HDRP(bp), PACK(bytes, 0));
-    PUT(FTRP(bp), PACK(bytes, 0));
-    
-    heap_epilogue = NEXT_BP(bp);
-    PUT(HDRP(heap_epilogue), PACK(DSIZE + DSIZE, 1));
-    PUT(PRED(heap_epilogue), PACK(0, 0));
-    PUT(SUCC(heap_epilogue), PACK(0, 0));
-    PUT(FTRP(heap_epilogue), PACK(DSIZE + DSIZE, 1));
-    
-    LINK(bp, PRED_BP(bp), heap_epilogue);
-    UNLINK(bp);
+    PUT(HDRP(bp), PACK(bytes, 0));   // 새로운 가용 블록 헤더 설정
+    PUT(FTRP(bp), PACK(bytes, 0));   // 새로운 가용 블록 푸터 설정
+    PUT(HDRP(NEXT_BP(bp)), PACK(0, 1));  // 새로운 가용 블록 에필로그 헤더 설정
     
     return coalesce(bp);
 }
@@ -151,28 +132,22 @@ void *extend_heap(size_t bytes)
  */
 int mm_init(void)
 {
-    char *heap_listp = mem_sbrk(8 * WSIZE); // 찍어보니 무조건 16배수로 반환
+    heap_listp = mem_sbrk(4 * WSIZE); // 찍어보니 무조건 16배수로 반환
 
     if (heap_listp == (void *)-1)
         return -1;
-
-    PUT(heap_listp + (0 * WSIZE), PACK(DSIZE + DSIZE, 1));
-    PUT(heap_listp + (1 * WSIZE), PACK(0, 0));
-    PUT(heap_listp + (2 * WSIZE), PACK(0, 0));
-    PUT(heap_listp + (3 * WSIZE), PACK(DSIZE + DSIZE, 1));
-    PUT(heap_listp + (4 * WSIZE), PACK(DSIZE + DSIZE, 1));
-    PUT(heap_listp + (5 * WSIZE), PACK(0, 0));
-    PUT(heap_listp + (6 * WSIZE), PACK(0, 0));
-    PUT(heap_listp + (7 * WSIZE), PACK(DSIZE + DSIZE, 1));
-
-    heap_prologue = heap_listp + (1 * WSIZE);
-    heap_epilogue = heap_listp + (5 * WSIZE);
-
-    PUT(PRED(heap_prologue), NULL);
-    PUT(SUCC(heap_prologue), heap_epilogue);
-    PUT(PRED(heap_epilogue), heap_prologue);
-    PUT(SUCC(heap_epilogue), NULL);
     
+    PUT(heap_listp + (0 * WSIZE), PACK(0, 0));
+    PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));
+    PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));
+    PUT(heap_listp + (3 * WSIZE), PACK(0, 1));
+
+    heap_listp += (2 * WSIZE);
+
+#ifdef USE_NEXT_FIT
+    heap_startp = heap_listp;
+#endif
+
     if (extend_heap(CHUNKSIZE) == NULL)
         return -1;
 
@@ -184,26 +159,28 @@ int mm_init(void)
  */
 void *first_fit(size_t bytes)
 {
-    unsigned long max = 18446744073709551614;
-    void *returnp = NULL;
-    for (void *bp = heap_prologue; bp != heap_epilogue; bp = SUCC_BP(bp)) {
-        if (!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= bytes)) {
-            if (GET_SIZE(HDRP(bp)) == bytes) {
-                return bp;
-            }
-            else if (GET_SIZE(HDRP(bp)) < max) {
-                max = GET_SIZE(HDRP(bp));
-                returnp = bp;
-            }
-        }
-    }
-    return returnp;
+    for (void *bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BP(bp))
+        if (!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= bytes))
+            return bp;
+    
+    return NULL;
+}
 
+/*
+ * next_fit - heap_listp를 기준으로 한번 순회해서, 해당 bytes의 free 블록이 있는지 찾는 함수
+ */
+void *next_fit(size_t bytes)
+{
+    void *bp = heap_listp;
 
-    // for (void *bp = heap_prologue; bp != heap_epilogue; bp = SUCC_BP(bp))
-    //     if (!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= bytes))
-    //         return bp;
-    // return NULL;
+    do {
+        if (!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= bytes))
+            return bp;
+        else
+            bp = (GET_SIZE(HDRP(bp)) == 0) ? heap_startp : NEXT_BP(bp);
+    } while (bp != heap_listp);
+
+    return NULL;
 }
 
 /*
@@ -212,18 +189,15 @@ void *first_fit(size_t bytes)
 void place(void *bp, size_t alloc_size)
 {
     size_t free_size = GET_SIZE(HDRP(bp));
-    UNLINK(bp);
 
     if ((free_size - alloc_size) >= (DSIZE + DSIZE)) {
         PUT(HDRP(bp), PACK(alloc_size, 1));
         PUT(FTRP(bp), PACK(alloc_size, 1));
 
         bp = NEXT_BP(bp);
-        
+
         PUT(HDRP(bp), PACK(free_size - alloc_size, 0));
         PUT(FTRP(bp), PACK(free_size - alloc_size, 0));
-
-        LINK(bp, heap_prologue, SUCC_BP(heap_prologue));
     }
     else {
         PUT(HDRP(bp), PACK(free_size, 1));
@@ -240,13 +214,21 @@ void *mm_malloc(size_t size)
         return NULL;
     
     size_t new_size = (size <= DSIZE) ? (DSIZE + DSIZE) : (ALIGN(size) + DSIZE);
+
+#ifdef USE_NEXT_FIT
+    void *check_bp = next_fit(new_size);
+#else
     void *check_bp = first_fit(new_size);
+#endif
 
     if (check_bp == NULL)
         check_bp = extend_heap(MAX(new_size, CHUNKSIZE));
 
     if (check_bp != NULL) {
         place(check_bp, new_size);
+#ifdef USE_NEXT_FIT
+        heap_listp = NEXT_BP(check_bp);
+#endif
         return check_bp;
     }
     else {
@@ -263,9 +245,6 @@ void mm_free(void *ptr)
 
     PUT(HDRP(ptr), PACK(size, 0));
     PUT(FTRP(ptr), PACK(size, 0));
-
-    PUT(PRED(ptr), NULL);
-    PUT(SUCC(ptr), NULL);
 
     coalesce(ptr);
 }
