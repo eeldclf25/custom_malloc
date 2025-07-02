@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
 
 #include "mm.h"
 #include "memlib.h"
@@ -52,7 +53,7 @@ typedef size_t default_t;   // mm.c 에서 사용할 워드 크기(해당 타입
 #define PACK(size, alloc) ((size) | (alloc))    // 해당 size 비트에 alloc 비트를 수정
 
 #define GET(p) (*(default_t *)(p))  // p 포인터 위치의 데이터 읽기
-#define PUT(p, val) (*(default_t *)(p) = (val))  // p의 포인터 위치에 val 데이터 삽입
+#define PUT(p, val) (*(default_t *)(p) = (default_t)(val))  // p의 포인터 위치에 val 데이터 삽입
 
 #define GET_SIZE(p) (GET(p) & ~(WSIZE - 1))    // 해당 주소 위치의 데이터를 WSZIE 배수로 GET
 #define GET_ALLOC(p) (GET(p) & (0x1))    // 해당 주소 위치의 데이터의 ALLOC 비트를 GET
@@ -71,16 +72,22 @@ typedef size_t default_t;   // mm.c 에서 사용할 워드 크기(해당 타입
 
 #define UNLINK(bp) \
     PUT(PRED(SUCC_BP(bp)), PRED_BP(bp)); \
-    PUT(SUCC(PRED_BP(bp)), SUCC_BP(bp));
+    PUT(SUCC(PRED_BP(bp)), SUCC_BP(bp))
 
 #define LINK(bp, pred, succ) \
     PUT(PRED(succ), (bp)); \
     PUT(PRED(bp), (pred)); \
     PUT(SUCC(bp), (succ)); \
-    PUT(SUCC(pred), (bp));
+    PUT(SUCC(pred), (bp))
 
 static char *heap_prologue = NULL;
 static char *heap_epilogue = NULL;
+
+
+
+
+
+#define USE_BEST_FIT
 
 
 
@@ -168,10 +175,8 @@ int mm_init(void)
     heap_prologue = heap_listp + (1 * WSIZE);
     heap_epilogue = heap_listp + (5 * WSIZE);
 
-    PUT(PRED(heap_prologue), NULL);
     PUT(SUCC(heap_prologue), heap_epilogue);
     PUT(PRED(heap_epilogue), heap_prologue);
-    PUT(SUCC(heap_epilogue), NULL);
     
     if (extend_heap(CHUNKSIZE) == NULL)
         return -1;
@@ -184,9 +189,10 @@ int mm_init(void)
  */
 void *first_fit(size_t bytes)
 {
-    unsigned long max = 18446744073709551614;
+#ifdef USE_BEST_FIT
+    default_t max = ULONG_MAX;
     void *returnp = NULL;
-    for (void *bp = heap_prologue; bp != heap_epilogue; bp = SUCC_BP(bp)) {
+    for (void *bp = heap_prologue; bp != heap_epilogue; bp = (void *)SUCC_BP(bp)) {
         if (!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= bytes)) {
             if (GET_SIZE(HDRP(bp)) == bytes) {
                 return bp;
@@ -198,12 +204,12 @@ void *first_fit(size_t bytes)
         }
     }
     return returnp;
-
-
-    // for (void *bp = heap_prologue; bp != heap_epilogue; bp = SUCC_BP(bp))
-    //     if (!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= bytes))
-    //         return bp;
-    // return NULL;
+#else
+    for (void *bp = heap_prologue; bp != heap_epilogue; bp = SUCC_BP(bp))
+        if (!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= bytes))
+            return bp;
+    return NULL;
+#endif
 }
 
 /*
@@ -222,7 +228,6 @@ void place(void *bp, size_t alloc_size)
         
         PUT(HDRP(bp), PACK(free_size - alloc_size, 0));
         PUT(FTRP(bp), PACK(free_size - alloc_size, 0));
-
         LINK(bp, heap_prologue, SUCC_BP(heap_prologue));
     }
     else {
@@ -263,9 +268,6 @@ void mm_free(void *ptr)
 
     PUT(HDRP(ptr), PACK(size, 0));
     PUT(FTRP(ptr), PACK(size, 0));
-
-    PUT(PRED(ptr), NULL);
-    PUT(SUCC(ptr), NULL);
 
     coalesce(ptr);
 }
